@@ -1,7 +1,7 @@
 
 `include "cla_8bits.sv"
 
-module alu_8bits(
+module tt_um_alu_8bits(
     // Puertos requeridos por TinyTapeout
     input  logic        clk,
     input  logic        rst_n,
