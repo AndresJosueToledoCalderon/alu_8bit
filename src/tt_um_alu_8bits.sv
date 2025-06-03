@@ -1,101 +1,169 @@
-`timescale 100ns / 1ps
 
 `include "cla_8bits.sv"
- 
+
 module Alu_8bits(
-    input  wire [7:0] A,  // entrada de A 8bit
-    input  wire [7:0] B,  // entrada de B 8bit
-    input  wire [2:0] op, // codigo para seleccionar operacion
-    input  wire   sh_sel, // seleccion de que numero A o B se hace el shift
-    output reg  [7:0] Y, // resultado de las operaciones
-    output reg        C, // carry out
-    output reg        Z, // si es cero
-    output reg        N, // si es negativo
-    output reg        V  // si hay overflow
-    );
-    // numero que elige para las operaciones de shift [Elegir A o B]
-    wire [7:0] S = sh_sel ? A : B; // se shiftea A o  B ?
+    // Puertos requeridos por TinyTapeout
+    input  logic        clk,
+    input  logic        rst_n,
+    input  logic        ena,
+    input  logic  [7:0] ui_in,
+    input  logic  [7:0] uio_in,
+    output logic  [7:0] uo_out,
+    output logic  [7:0] uio_out,
+    output logic  [7:0] uio_oe
+);
 
-    // definicion de variables intermedias para las salidas
-    // de la suma, resta y el carry correspondiente a cada una
+    // ------------------------------------------------------------
+    // 1) Mapeo de “inputs comunes” ui_in / uio_in a señales internas
+    // ------------------------------------------------------------
+    // Para que TinyTapeout genere el netlist sin error, aquí “consumimos”:
+    //   - ui_in: lo usamos completo como operando A.
+    //   - uio_in: lo usamos completo como operando B.
+    //   - op        = ui_in[2:0]
+    //   - sh_sel    = ui_in[3]
+    //
+    // (Dejamos el resto de bits de ui_in[7:4] solo para silenciar warnings.)
+    wire [7:0] A      = ui_in;
+    wire [7:0] B      = uio_in;
+    wire [2:0] op     = ui_in[2:0];
+    wire       sh_sel = ui_in[3];
+
+    // ------------------------------------------------------------
+    // 2) Instanciación del CLA para suma y resta (usando B o ~B)
+    // ------------------------------------------------------------
     wire [7:0] sum_out, diff_out;
-    wire sum_carry, diff_carry;
+    wire       sum_carry, diff_carry;
 
-    // suma: Cin = 0, no hay carry in
-    // se instacia el carry look ahead para la suma
+    // Suma: Cin = 0
     cla_8bits cla_sum (
-        .A(A), // asignar a A CLA, el A del input de la ALU que viene de los switches.
-        .B(B), // lo mismo para B, a CLA el input de la ALU
-        .Cin(1'b0), // carry igual a 0
-        .Sum(sum_out), // asignar a la suma de CLA la suma de la ALU, es decir Sum
-                       // "empuja" (da el valor) de la suma realizada a sum_out
+        .A   (A),
+        .B   (B),
+        .Cin (1'b0),
+        .Sum (sum_out),
         .Cout(sum_carry)
     );
 
-    // resta: A + (~B + 1) Cin = 1, se usa carry in para calcular la resta
-    // instacia para la resta con el carry look ahead adder
-    wire [7:0] B_comp = ~B; // B complemento
+    // Resta: A + (~B) + 1 → Cin = 1
+    wire [7:0] B_comp = ~B;
     cla_8bits cla_diff (
-        .A(A), // asignar a A CLA, el A del input de la ALU
-        .B(B_comp), // asignar a B de la CLA, el complemento de B de la entrada de ALU 
-        .Cin(1'b1), // carry igual a 1
-        .Sum(diff_out), // asignar a la resta de CLA la resta de la ALU, es decir Sum
-                       // "empuja" (da el valor) de la resta realizada a diff_out
+        .A   (A),
+        .B   (B_comp),
+        .Cin (1'b1),
+        .Sum (diff_out),
         .Cout(diff_carry)
     );
-    
-    // bloque combinacional
+
+    // ------------------------------------------------------------
+    // 3) Lógica de shifts (elige A o B según sh_sel)
+    // ------------------------------------------------------------
+    wire [7:0] S = sh_sel ? A : B;
+
+    // ------------------------------------------------------------
+    // 4) Señales internas de bandera y resultado
+    // ------------------------------------------------------------
+    logic [7:0] Y;  // Resultado final de la ALU
+    logic        C; // Carry out
+    logic        Z; // Zero flag
+    logic        N; // Negative flag
+    logic        V; // Overflow flag
+
+    // ------------------------------------------------------------
+    // 5) Bloque combinacional que implementa las operaciones
+    // ------------------------------------------------------------
     always @* begin
-        Y = 8'h00; // definir Y, resultado con 8 bits, valores por defecto = 0
-        C = 1'b0;  // definir carry out salida 1 bit, valore por defecto = 0
-        V = 1'b0;  // definir salida overflow 1 bit, valor por defecto 0
+        // Valores por defecto:
+        Y = 8'h00;
+        C = 1'b0;
+        V = 1'b0;
 
         case (op)
-            3'b000: begin // suma
-                Y = sum_out;   // se asigna el resultado de la suma a la salida y
-                C = sum_carry; // se asigna el carry de la suma
-                V = A[7] ~^ B[7] ? 1'b0 : (A[7] ^ Y[7]); 
-                // overflow solo si A y B tienen el mismo signo y difiere el signo del resultado
-                // overflow si el signo de Y difiere del signo de A/B
-                // V = (A[7] != Y[7]);
-                // si no, V=0
+            3'b000: begin // Suma
+                Y = sum_out;
+                C = sum_carry;
+                // Overflow si A y B mismo signo, y signo de Y distinto
+                V = (A[7] ~^ B[7]) ? 1'b0 : (A[7] ^ Y[7]);
             end
 
-            3'b100: begin // resta (A - B)
-                Y = diff_out; // se asgina el resultado de la resta a la salida
-                C = diff_carry; // se asigna el carry out si hay
+            3'b100: begin // Resta (A - B)
+                Y = diff_out;
+                C = diff_carry;
+                // Overflow si A y B signos distintos, y signo de Y distinto de A
                 V = (A[7] ^ B[7]) & (A[7] ^ Y[7]);
-                // (A[7] ^ B[7]) detecta que A y B tenían signos distintos.
-                // (A[7] ^ Y[7]) detecta que el resultado Y cambió de signo respecto a A.
-                // solo si ambas condiciones son verdaderas -> V = 1. 
             end
-            // operacion AND y carry = 0
-            3'b010: begin Y = A & B; C = 1'b0; end
-            
-            // operacion OR y carry = 0
-            3'b110: begin Y = A | B; C = 1'b0; end
-            
-            // shift a la derecha logico 1 posicion
-            3'b001: begin C = S[0]; Y = S >> 1; end
-            
-            // shift a la izquierda logico 1 posicion
-            3'b101: begin C = S[7]; Y = S << 1; end
-            
-            // shift a la derecha aritmetico
-            3'b011: begin C = S[0]; Y = $signed(S) >>> 1; end
-            
-            // sin operacion, solo pasa S (numero seleccionado A o B)
-            3'b111: begin Y = S; C = 1'b0; end
-            
-            // caso no valido Y = 0 y Carry  = 0
-            default: begin Y = 8'h00; C = 1'b0; end
+
+            3'b010: begin // AND
+                Y = A & B;
+                C = 1'b0;
+                V = 1'b0;
+            end
+
+            3'b110: begin // OR
+                Y = A | B;
+                C = 1'b0;
+                V = 1'b0;
+            end
+
+            3'b001: begin // Shift right lógico 1
+                C = S[0];
+                Y = S >> 1;
+                V = 1'b0;
+            end
+
+            3'b101: begin // Shift left lógico 1
+                C = S[7];
+                Y = S << 1;
+                V = 1'b0;
+            end
+
+            3'b011: begin // Shift right aritmético
+                C = S[0];
+                Y = $signed(S) >>> 1;
+                V = 1'b0;
+            end
+
+            3'b111: begin // Pasa S sin operación
+                Y = S;
+                C = 1'b0;
+                V = 1'b0;
+            end
+
+            default: begin // Caso no válido
+                Y = 8'h00;
+                C = 1'b0;
+                V = 1'b0;
+            end
         endcase
-        
-        // flags de cero o negativo
+
+        // Flags de cero y negativo
         Z = (Y == 8'b0);
         N = Y[7];
     end
-       
+
+    // ------------------------------------------------------------
+    // 6) Mapear la salida Y hacia uo_out (puerto común de salida)
+    // ------------------------------------------------------------
+    assign uo_out = Y;
+
+    // ------------------------------------------------------------
+    // 7) Outputs bidireccionales “apagados” (señales no usadas)
+    // ------------------------------------------------------------
+    assign uio_out = 8'b0;
+    assign uio_oe  = 8'b0;
+
+    // ------------------------------------------------------------
+    // 8) Señales de entrada que no usamos (rst_n, ena, ui_in[7:4], uio_in)
+    //    — una sola línea “_unused_ok” según recomendación TinyTapeout,
+    //    para silenciar todos los warnings UNUSEDSIGNAL.
+    // ------------------------------------------------------------
+    wire _unused_ok = &{
+        1'b0,
+        rst_n,          // no usamos reset
+        ena,            // no usamos enable
+        ui_in[7:4],     // bits superiores de ui_in, no usados en la ALU
+        uio_in,         // no usamos uio_in como bidireccional real en la lógica
+        1'b0
+    };
+
 endmodule
 
 
