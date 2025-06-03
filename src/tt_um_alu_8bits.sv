@@ -1,5 +1,5 @@
 
-`include "cla_8bits.sv"
+//`include "cla_8bits.sv"
 
 module tt_um_alu_8bits(
     // Puertos requeridos por TinyTapeout
